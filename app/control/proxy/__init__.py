@@ -208,11 +208,13 @@ class ProxyDirectory:
         proxy_url = await self._pick_proxy_url(resource=resource, host=clearance_host)
         affinity = proxy_url or "direct"
 
-        bundle = await self._get_or_build_bundle(
-            affinity_key=affinity,
-            proxy_url=proxy_url or "",
-            clearance_origin=clearance_origin or _DEFAULT_CLEARANCE_ORIGIN,
-        )
+        bundle = None
+        if self._should_build_clearance(clearance_host, proxy_url):
+            bundle = await self._get_or_build_bundle(
+                affinity_key=affinity,
+                proxy_url=proxy_url or "",
+                clearance_origin=clearance_origin or _DEFAULT_CLEARANCE_ORIGIN,
+            )
 
         return ProxyLease(
             lease_id=next_hex(),
@@ -291,6 +293,13 @@ class ProxyDirectory:
             idx = self._pool_cursor % len(nodes)
             return nodes[idx].proxy_url
 
+    def _should_build_clearance(self, host: str, proxy_url: str | None) -> bool:
+        if self._clearance_mode == ClearanceMode.NONE:
+            return False
+        if self._proxy_hosts and not proxy_url and not _host_matches(host, self._proxy_hosts):
+            return False
+        return True
+
     async def _get_or_build_bundle(
         self,
         *,
@@ -298,8 +307,6 @@ class ProxyDirectory:
         proxy_url: str,
         clearance_origin: str,
     ) -> ClearanceBundle | None:
-        if self._clearance_mode == ClearanceMode.NONE:
-            return None
         clearance_host = _clearance_host(clearance_origin)
         key: BundleKey = (affinity_key, clearance_host)
 

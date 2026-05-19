@@ -36,6 +36,15 @@ def _config(**overrides):
     return _FakeConfig(values)
 
 
+class _FakeFlareProvider:
+    def __init__(self):
+        self.calls = []
+
+    async def refresh_bundle(self, **kwargs):
+        self.calls.append(kwargs)
+        return None
+
+
 class ProxyHostRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def _directory(self, cfg: _FakeConfig) -> ProxyDirectory:
         directory = ProxyDirectory()
@@ -83,6 +92,26 @@ class ProxyHostRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(console_lease.proxy_url, "socks5://warp:40000")
         self.assertIsNone(apex_lease.proxy_url)
+
+    async def test_non_proxy_host_skips_dynamic_clearance_when_proxy_hosts_set(self):
+        directory = await self._directory(
+            _config(
+                **{
+                    "proxy.clearance.mode": "flaresolverr",
+                    "proxy.egress.proxy_hosts": ["console.x.ai"],
+                }
+            )
+        )
+        flare = _FakeFlareProvider()
+        directory._flare = flare
+
+        grok_lease = await directory.acquire(clearance_origin="https://grok.com")
+        console_lease = await directory.acquire(clearance_origin="https://console.x.ai")
+
+        self.assertIsNone(grok_lease.proxy_url)
+        self.assertEqual(console_lease.proxy_url, "socks5://warp:40000")
+        self.assertEqual(len(flare.calls), 1)
+        self.assertEqual(flare.calls[0]["target_url"], "https://console.x.ai")
 
 
 if __name__ == "__main__":
