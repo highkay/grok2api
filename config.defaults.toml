@@ -82,6 +82,11 @@ proxy_pool = []
 resource_proxy_url = ""
 # 资源代理池（图片/视频下载，未配置则回落到 proxy_pool）
 resource_proxy_pool = []
+# 只让指定目标 Host 走代理；为空时保持旧行为：所有请求按 mode 走代理。
+# 支持精确 Host、*.example.com 和 .example.com。
+proxy_hosts = []
+# 强制指定目标 Host 直连；优先级高于 proxy_hosts。
+direct_hosts = []
 # 跳过代理 SSL 证书验证（代理使用自签名证书时启用）
 skip_ssl_verify = false
 

@@ -36,6 +36,36 @@ def _clearance_host(clearance_origin: str | None) -> str:
     return (host or "grok.com").lower()
 
 
+def _normalise_host_patterns(values: list | tuple) -> tuple[str, ...]:
+    patterns: list[str] = []
+    for value in values:
+        host = str(value or "").strip().lower()
+        if host:
+            patterns.append(host)
+    return tuple(patterns)
+
+
+def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:
+    host = (host or "").strip().lower()
+    if not host:
+        return False
+    for pattern in patterns:
+        if pattern == "*":
+            return True
+        if pattern.startswith("*."):
+            suffix = pattern[1:]
+            if host.endswith(suffix) and host != suffix[1:]:
+                return True
+            continue
+        if pattern.startswith("."):
+            if host == pattern[1:] or host.endswith(pattern):
+                return True
+            continue
+        if host == pattern:
+            return True
+    return False
+
+
 class ProxyDirectory:
     """Owns egress nodes and clearance bundles.
 
@@ -54,6 +84,8 @@ class ProxyDirectory:
         self._flare = FlareSolverrClearanceProvider()
         self._egress_mode: EgressMode = EgressMode.DIRECT
         self._clearance_mode: ClearanceMode = ClearanceMode.NONE
+        self._proxy_hosts: tuple[str, ...] = ()
+        self._direct_hosts: tuple[str, ...] = ()
         self._config_sig: tuple | None = None
         # Pool cursor for PROXY_POOL mode: sticky routing with failure-driven rotate.
         # Incremented on node failure; all callers see the same cursor under _lock.
@@ -74,6 +106,12 @@ class ProxyDirectory:
         res_url = cfg.get_str("proxy.egress.resource_proxy_url", "")
         base_pool = tuple(cfg.get_list("proxy.egress.proxy_pool", []))
         res_pool = tuple(cfg.get_list("proxy.egress.resource_proxy_pool", []))
+        proxy_hosts = _normalise_host_patterns(
+            tuple(cfg.get_list("proxy.egress.proxy_hosts", []))
+        )
+        direct_hosts = _normalise_host_patterns(
+            tuple(cfg.get_list("proxy.egress.direct_hosts", []))
+        )
         clearance = resolve_clearance_config(cfg)
         config_sig = (
             egress_mode.value,
@@ -82,6 +120,8 @@ class ProxyDirectory:
             res_url,
             base_pool,
             res_pool,
+            proxy_hosts,
+            direct_hosts,
             cfg.get_str("proxy.clearance.flaresolverr_url", ""),
             clearance.cf_cookies,
             clearance.user_agent,
@@ -110,6 +150,7 @@ class ProxyDirectory:
                 )
 
         valid_affinities = {n.proxy_url or "direct" for n in [*nodes, *resource_nodes]}
+        valid_affinities.add("direct")
         if not valid_affinities:
             valid_affinities = {"direct"}
 
@@ -122,6 +163,8 @@ class ProxyDirectory:
             self._clearance_mode = clearance_mode
             self._nodes = nodes
             self._resource_nodes = resource_nodes
+            self._proxy_hosts = proxy_hosts
+            self._direct_hosts = direct_hosts
             self._pool_cursor = 0
             self._bundles = {
                 key: bundle.model_copy(update={"state": ClearanceBundleState.INVALID})
@@ -136,11 +179,13 @@ class ProxyDirectory:
             self._config_sig = config_sig
 
         logger.info(
-            "proxy directory loaded: egress_mode={} clearance_mode={} node_count={} resource_node_count={}",
+            "proxy directory loaded: egress_mode={} clearance_mode={} node_count={} resource_node_count={} proxy_hosts={} direct_hosts={}",
             egress_mode,
             clearance_mode,
             len(nodes),
             len(resource_nodes),
+            list(proxy_hosts),
+            list(direct_hosts),
         )
 
     # ------------------------------------------------------------------
@@ -159,9 +204,9 @@ class ProxyDirectory:
 
         For DIRECT mode, returns a lease with no proxy or clearance.
         """
-        proxy_url = await self._pick_proxy_url(resource=resource)
-        affinity = proxy_url or "direct"
         clearance_host = _clearance_host(clearance_origin)
+        proxy_url = await self._pick_proxy_url(resource=resource, host=clearance_host)
+        affinity = proxy_url or "direct"
 
         bundle = await self._get_or_build_bundle(
             affinity_key=affinity,
@@ -224,10 +269,14 @@ class ProxyDirectory:
     # Internal
     # ------------------------------------------------------------------
 
-    async def _pick_proxy_url(self, resource: bool = False) -> str | None:
+    async def _pick_proxy_url(self, resource: bool = False, host: str = "") -> str | None:
         if self._egress_mode == EgressMode.DIRECT:
             return None
         async with self._lock:
+            if _host_matches(host, self._direct_hosts):
+                return None
+            if self._proxy_hosts and not _host_matches(host, self._proxy_hosts):
+                return None
             # Prefer resource-specific nodes when available; fall back to base nodes.
             nodes = (
                 self._resource_nodes
