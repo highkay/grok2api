@@ -52,7 +52,7 @@ from app.dataplane.reverse.protocol.xai_console import (
     parse_console_error,
 )
 from app.dataplane.reverse.protocol.xai_usage import is_invalid_credentials_error
-from app.dataplane.reverse.runtime.endpoint_table import CHAT, CONSOLE_RESPONSES
+from app.dataplane.reverse.runtime.endpoint_table import CHAT, CONSOLE_BASE, CONSOLE_RESPONSES
 from app.dataplane.reverse.transport.asset_upload import upload_from_input
 from app.dataplane.reverse.protocol.tool_prompt import (
     build_tool_system_prompt,
@@ -463,7 +463,7 @@ async def _console_post(
     for closing the returned ``session`` via ``await session.__aexit__()``.
     """
     proxy = await get_proxy_runtime()
-    lease = await proxy.acquire()
+    lease = await proxy.acquire(clearance_origin=CONSOLE_BASE)
 
     payload = build_console_payload(
         console_model=console_model,
@@ -480,8 +480,8 @@ async def _console_post(
     headers = build_http_headers(
         token,
         content_type="application/json",
-        origin="https://console.x.ai",
-        referer="https://console.x.ai/",
+        origin=CONSOLE_BASE,
+        referer=f"{CONSOLE_BASE}/",
         lease=lease,
     )
     session_kwargs = build_session_kwargs(lease=lease)
