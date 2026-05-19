@@ -66,6 +66,17 @@ def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:
     return False
 
 
+def _clearance_origins_for_proxy_hosts(proxy_hosts: tuple[str, ...]) -> tuple[str, ...]:
+    if not proxy_hosts:
+        return (_DEFAULT_CLEARANCE_ORIGIN,)
+    origins: list[str] = []
+    for host in proxy_hosts:
+        if "*" in host or host.startswith("."):
+            continue
+        origins.append(f"https://{host}")
+    return tuple(origins)
+
+
 class ProxyDirectory:
     """Owns egress nodes and clearance bundles.
 
@@ -376,17 +387,20 @@ class ProxyDirectory:
             return
         async with self._lock:
             nodes = list(self._nodes)
+            proxy_hosts = self._proxy_hosts
+        clearance_origins = _clearance_origins_for_proxy_hosts(proxy_hosts)
         affinity_keys = (
             [(n.proxy_url or "direct", n.proxy_url or "") for n in nodes]
             if nodes
             else [("direct", "")]
         )
         for affinity, proxy_url in affinity_keys:
-            await self._get_or_build_bundle(
-                affinity_key=affinity,
-                proxy_url=proxy_url,
-                clearance_origin=_DEFAULT_CLEARANCE_ORIGIN,
-            )
+            for clearance_origin in clearance_origins:
+                await self._get_or_build_bundle(
+                    affinity_key=affinity,
+                    proxy_url=proxy_url,
+                    clearance_origin=clearance_origin,
+                )
 
     async def refresh_clearance_safe(self) -> None:
         """Scheduled clearance refresh: build new bundles then swap atomically.
@@ -401,16 +415,19 @@ class ProxyDirectory:
         async with self._lock:
             nodes = list(self._nodes)
             existing = list(self._bundles.keys())
+            proxy_hosts = self._proxy_hosts
 
         refresh_targets: dict[BundleKey, tuple[str, str]] = {}
+        clearance_origins = _clearance_origins_for_proxy_hosts(proxy_hosts)
         default_items = (
             [(n.proxy_url or "direct", n.proxy_url or "") for n in nodes]
             if nodes
             else [("direct", "")]
         )
         for affinity, proxy_url in default_items:
-            key: BundleKey = (affinity, _clearance_host(_DEFAULT_CLEARANCE_ORIGIN))
-            refresh_targets[key] = (proxy_url, _DEFAULT_CLEARANCE_ORIGIN)
+            for clearance_origin in clearance_origins:
+                key: BundleKey = (affinity, _clearance_host(clearance_origin))
+                refresh_targets[key] = (proxy_url, clearance_origin)
         for key in existing:
             affinity, clearance_host = key
             refresh_targets.setdefault(

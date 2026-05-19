@@ -113,6 +113,24 @@ class ProxyHostRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(flare.calls), 1)
         self.assertEqual(flare.calls[0]["target_url"], "https://console.x.ai")
 
+    async def test_warm_up_uses_proxy_hosts_as_clearance_targets(self):
+        directory = await self._directory(
+            _config(
+                **{
+                    "proxy.clearance.mode": "flaresolverr",
+                    "proxy.egress.proxy_hosts": ["console.x.ai"],
+                }
+            )
+        )
+        flare = _FakeFlareProvider()
+        directory._flare = flare
+
+        await directory.warm_up()
+
+        self.assertEqual(len(flare.calls), 1)
+        self.assertEqual(flare.calls[0]["proxy_url"], "socks5://warp:40000")
+        self.assertEqual(flare.calls[0]["target_url"], "https://console.x.ai")
+
 
 if __name__ == "__main__":
     unittest.main()
