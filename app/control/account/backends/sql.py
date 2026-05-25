@@ -47,6 +47,7 @@ accounts_table = sa.Table(
     sa.Column("quota_expert",     sa.Text,    nullable=False, default="{}"),
     sa.Column("quota_heavy",      sa.Text,    nullable=False, default="{}"),
     sa.Column("quota_grok_4_3",   sa.Text,    nullable=False, default="{}"),
+    sa.Column("quota_console",    sa.Text,    nullable=False, default="{}"),
     sa.Column("usage_use_count",  sa.Integer, nullable=False, default=0),
     sa.Column("usage_fail_count", sa.Integer, nullable=False, default=0),
     sa.Column("usage_sync_count", sa.Integer, nullable=False, default=0),
@@ -407,14 +408,17 @@ def _row_to_record(row: Any) -> AccountRecord:
     d["tags"]  = json.loads(d.get("tags")  or "[]")
     heavy_raw     = d.pop("quota_heavy",    "{}") or "{}"
     grok_4_3_raw  = d.pop("quota_grok_4_3", "{}") or "{}"
+    console_raw   = d.pop("quota_console",  "{}") or "{}"
     heavy_dict    = json.loads(heavy_raw)
     grok_4_3_dict = json.loads(grok_4_3_raw)
+    console_dict  = json.loads(console_raw)
     d["quota"] = {
         "auto":   json.loads(d.pop("quota_auto",   "{}") or "{}"),
         "fast":   json.loads(d.pop("quota_fast",   "{}") or "{}"),
         "expert": json.loads(d.pop("quota_expert", "{}") or "{}"),
         **({"heavy":    heavy_dict}    if heavy_dict    else {}),
         **({"grok_4_3": grok_4_3_dict} if grok_4_3_dict else {}),
+        **({"console":  console_dict}  if console_dict  else {}),
     }
     d["ext"] = json.loads(d.get("ext") or "{}")
     return AccountRecord.model_validate(d)
@@ -522,28 +526,31 @@ class SqlAccountRepository:
     async def _ensure_columns(self, conn: Any) -> None:
         """Idempotent ALTER TABLE migrations for columns added after the initial schema."""
         existing = await self._table_columns(conn, _TBL_ACCOUNTS)
-        if "quota_grok_4_3" not in existing:
-            if self._dialect == "mysql":
-                # MySQL forbids DEFAULT values on TEXT/BLOB columns;
-                # add as nullable, backfill, then promote to NOT NULL.
-                await conn.exec_driver_sql(
-                    f"ALTER TABLE {_TBL_ACCOUNTS} "
-                    f"ADD COLUMN quota_grok_4_3 TEXT"
-                )
-                await conn.exec_driver_sql(
-                    f"UPDATE {_TBL_ACCOUNTS} "
-                    f"SET quota_grok_4_3 = '{{}}' "
-                    f"WHERE quota_grok_4_3 IS NULL"
-                )
-                await conn.exec_driver_sql(
-                    f"ALTER TABLE {_TBL_ACCOUNTS} "
-                    f"MODIFY COLUMN quota_grok_4_3 TEXT NOT NULL"
-                )
-            else:
-                await conn.exec_driver_sql(
-                    f"ALTER TABLE {_TBL_ACCOUNTS} "
-                    f"ADD COLUMN quota_grok_4_3 TEXT NOT NULL DEFAULT '{{}}'"
-                )
+        await self._ensure_text_column(conn, existing, "quota_grok_4_3")
+        await self._ensure_text_column(conn, existing, "quota_console")
+
+    async def _ensure_text_column(
+        self, conn: Any, existing: set[str], column: str
+    ) -> None:
+        if column in existing:
+            return
+        if self._dialect == "mysql":
+            # MySQL forbids DEFAULT values on TEXT/BLOB columns;
+            # add as nullable, backfill, then promote to NOT NULL.
+            await conn.exec_driver_sql(
+                f"ALTER TABLE {_TBL_ACCOUNTS} ADD COLUMN {column} TEXT"
+            )
+            await conn.exec_driver_sql(
+                f"UPDATE {_TBL_ACCOUNTS} SET {column} = '{{}}' WHERE {column} IS NULL"
+            )
+            await conn.exec_driver_sql(
+                f"ALTER TABLE {_TBL_ACCOUNTS} MODIFY COLUMN {column} TEXT NOT NULL"
+            )
+        else:
+            await conn.exec_driver_sql(
+                f"ALTER TABLE {_TBL_ACCOUNTS} "
+                f"ADD COLUMN {column} TEXT NOT NULL DEFAULT '{{}}'"
+            )
 
     async def _table_columns(self, conn: Any, table: str) -> set[str]:
         if self._dialect == "postgresql":
@@ -642,6 +649,7 @@ class SqlAccountRepository:
                     "quota_expert":     json.dumps(qs.expert.to_dict()),
                     "quota_heavy":      json.dumps(qs.heavy.to_dict())    if qs.heavy    else "{}",
                     "quota_grok_4_3":   json.dumps(qs.grok_4_3.to_dict()) if qs.grok_4_3 else "{}",
+                    "quota_console":    json.dumps(qs.console.to_dict())  if qs.console  else "{}",
                     "usage_use_count":  0,
                     "usage_fail_count": 0,
                     "usage_sync_count": 0,
@@ -698,6 +706,8 @@ class SqlAccountRepository:
                     updates["quota_heavy"] = json.dumps(patch.quota_heavy)
                 if patch.quota_grok_4_3 is not None:
                     updates["quota_grok_4_3"] = json.dumps(patch.quota_grok_4_3)
+                if patch.quota_console is not None:
+                    updates["quota_console"] = json.dumps(patch.quota_console)
                 if patch.usage_use_delta is not None:
                     updates["usage_use_count"] = max(0, record.usage_use_count + patch.usage_use_delta)
                 if patch.usage_fail_delta is not None:

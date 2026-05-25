@@ -39,12 +39,12 @@ MODELS: tuple[ModelSpec, ...] = (
     # === Console API (console.x.ai/v1/responses) ============================
     # 通过 SSO cookie 直接调用 console.x.ai，basic 账号即可使用所有模型
     # 速率限制由 console.x.ai 控制（免费 tier: 1 rps / 60 RPM）
-    ModelSpec("grok-4.3",                               ModeId.FAST, Tier.BASIC, Capability.CHAT,           True, "Grok 4.3 (Console)",                    console_model="grok-4.3"),
-    ModelSpec("grok-4",                                 ModeId.FAST, Tier.BASIC, Capability.CHAT,           True, "Grok 4 (Console)",                      console_model="grok-4"),
-    ModelSpec("grok-4.20",                              ModeId.FAST, Tier.BASIC, Capability.CHAT,           True, "Grok 4.20 (Console)",                   console_model="grok-4.20"),
-    ModelSpec("grok-4.20-reasoning",                    ModeId.FAST, Tier.BASIC, Capability.CHAT,           True, "Grok 4.20 Reasoning (Console)",         console_model="grok-4.20-0309-reasoning"),
-    ModelSpec("grok-4.20-non-reasoning",                ModeId.FAST, Tier.BASIC, Capability.CHAT,           True, "Grok 4.20 Non-Reasoning (Console)",     console_model="grok-4.20-0309-non-reasoning"),
-    ModelSpec("grok-4.20-multi-agent",                  ModeId.FAST, Tier.BASIC, Capability.CHAT,           True, "Grok 4.20 Multi-Agent (Console)",       console_model="grok-4.20-multi-agent-0309"),
+    ModelSpec("grok-4.3",                               ModeId.CONSOLE, Tier.BASIC, Capability.CHAT,        True, "Grok 4.3 (Console)",                    console_model="grok-4.3"),
+    ModelSpec("grok-4",                                 ModeId.CONSOLE, Tier.BASIC, Capability.CHAT,        True, "Grok 4 (Console)",                      console_model="grok-4"),
+    ModelSpec("grok-4.20",                              ModeId.CONSOLE, Tier.BASIC, Capability.CHAT,        True, "Grok 4.20 (Console)",                   console_model="grok-4.20"),
+    ModelSpec("grok-4.20-reasoning",                    ModeId.CONSOLE, Tier.BASIC, Capability.CHAT,        True, "Grok 4.20 Reasoning (Console)",         console_model="grok-4.20-0309-reasoning"),
+    ModelSpec("grok-4.20-non-reasoning",                ModeId.CONSOLE, Tier.BASIC, Capability.CHAT,        True, "Grok 4.20 Non-Reasoning (Console)",     console_model="grok-4.20-0309-non-reasoning"),
+    ModelSpec("grok-4.20-multi-agent",                  ModeId.CONSOLE, Tier.BASIC, Capability.CHAT,        True, "Grok 4.20 Multi-Agent (Console)",       console_model="grok-4.20-multi-agent-0309"),
 
     # === Image ==============================================================
 

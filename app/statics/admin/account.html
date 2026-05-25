@@ -559,6 +559,7 @@
     .q-e { background:#f7f3fb; color:#8d6bbd }
     .q-h { background:#fff4ed; color:#b0632a }
     .q-b { background:#fdf2f7; color:#be3f7f }
+    .q-c { background:#eef8f8; color:#26736f }
     .q-z { background:#f6f6f6; color:#a0a0a6 }
 
     /* Token monospace */
@@ -849,6 +850,24 @@
       </div>
       <div class="stat-num" id="s-qh" style="color:#b0632a">0</div>
     </div>
+    <div class="stat-cell" data-quota-only>
+      <div class="stat-top">
+        <div class="stat-label" data-i18n="account.statGrok43">Grok 4.3 余额</div>
+        <span class="stat-icon" style="color:#be3f7f">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M5 19h14"/><path d="M8 16v-3"/><path d="M12 16V7"/><path d="M16 16v-5"/></svg>
+        </span>
+      </div>
+      <div class="stat-num" id="s-qb" style="color:#be3f7f">0</div>
+    </div>
+    <div class="stat-cell" data-quota-only>
+      <div class="stat-top">
+        <div class="stat-label" data-i18n="account.statConsole">Console 余额</div>
+        <span class="stat-icon" style="color:#26736f">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 18h12"/><path d="M8 15V9"/><path d="M12 15V6"/><path d="M16 15v-4"/><path d="M5 5h14"/></svg>
+        </span>
+      </div>
+      <div class="stat-num" id="s-qc" style="color:#26736f">0</div>
+    </div>
   </div>
 
   <div class="section-head" style="margin-top:40px">
@@ -978,6 +997,8 @@
               <span class="q-pill q-f">F</span>
               <span class="q-pill q-e">E</span>
               <span class="q-pill q-h">H</span>
+              <span class="q-pill q-b">B</span>
+              <span class="q-pill q-c">C</span>
             </span>
           </th>
           <th class="table-center" data-i18n="account.colSuccess">成功</th>
@@ -1232,6 +1253,8 @@ function getTokenView() {
     qf: 0,
     qe: 0,
     qh: 0,
+    qb: 0,
+    qc: 0,
   };
   const statusCounts = { all: 0, active: 0, cooling: 0, invalid: 0, disabled: 0 };
   const nsfwCounts = { all: 0, enabled: 0, disabled: 0 };
@@ -1260,6 +1283,8 @@ function getTokenView() {
     stats.qf += quota.fast?.remaining || 0;
     stats.qe += quota.expert?.remaining || 0;
     stats.qh += quota.heavy?.remaining || 0;
+    stats.qb += quota.grok_4_3?.remaining || 0;
+    stats.qc += quota.console?.remaining || 0;
 
     if (token.status === 'active') stats.active += 1;
     if (token.status === 'cooling') stats.cooling += 1;
@@ -1327,7 +1352,12 @@ function renderStats(view = getTokenView()) {
   $('s-calls', fmt(stats.calls));
   $('s-success', fmt(stats.success));
   $('s-rate', fmtRate(stats.success, stats.fail));
-  $('s-qa', fmt(stats.qa)); $('s-qf', fmt(stats.qf)); $('s-qe', fmt(stats.qe)); $('s-qh', fmt(stats.qh));
+  $('s-qa', fmt(stats.qa));
+  $('s-qf', fmt(stats.qf));
+  $('s-qe', fmt(stats.qe));
+  $('s-qh', fmt(stats.qh));
+  $('s-qb', fmt(stats.qb));
+  $('s-qc', fmt(stats.qc));
 }
 
 function renderFilters(view = getTokenView()) {
@@ -1520,6 +1550,7 @@ function qpills(q) {
     ['expert',   'E', 'q-e', true],
     ['heavy',    'H', 'q-h', true],
     ['grok_4_3', 'B', 'q-b', false],
+    ['console',  'C', 'q-c', false],
   ];
   return modes.map(([m,l,c,showEmpty]) => {
     const win = q[m];

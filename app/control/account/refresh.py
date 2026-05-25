@@ -51,7 +51,10 @@ _MODE_KEYS = {
     2: "quota_expert",
     3: "quota_heavy",
     4: "quota_grok_4_3",
+    5: "quota_console",
 }
+
+_UPSTREAM_USAGE_MODE_IDS = frozenset((0, 1, 2, 3, 4))
 
 
 class AccountRefreshService:
@@ -86,7 +89,14 @@ class AccountRefreshService:
         try:
             from app.dataplane.reverse.protocol.xai_usage import fetch_all_quotas
 
-            return await fetch_all_quotas(token, supported_mode_ids(pool))
+            mode_ids = tuple(
+                mode_id
+                for mode_id in supported_mode_ids(pool)
+                if mode_id in _UPSTREAM_USAGE_MODE_IDS
+            )
+            if not mode_ids:
+                return {}
+            return await fetch_all_quotas(token, mode_ids)
         except UpstreamError:
             raise
         except Exception as exc:
@@ -105,6 +115,14 @@ class AccountRefreshService:
         if not supports_mode(pool, mode_id):
             logger.debug(
                 "account mode quota fetch skipped: token={}... pool={} mode_id={} reason=unsupported_mode",
+                token[:10],
+                pool,
+                mode_id,
+            )
+            return None
+        if mode_id not in _UPSTREAM_USAGE_MODE_IDS:
+            logger.debug(
+                "account mode quota fetch skipped: token={}... pool={} mode_id={} reason=local_estimated_mode",
                 token[:10],
                 pool,
                 mode_id,

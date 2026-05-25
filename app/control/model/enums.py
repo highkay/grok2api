@@ -14,10 +14,12 @@ class ModeId(IntEnum):
     EXPERT = 2  # modeId="expert"
     HEAVY = 3  # modeId="heavy"    — only available on heavy-pool accounts
     GROK_4_3 = 4  # modeId="grok-420-computer-use-sa" — super/heavy only
+    CONSOLE = 5  # local-only quota bucket for console.x.ai responses
 
     def to_api_str(self) -> str:
         _OVERRIDES: dict[int, str] = {
             ModeId.GROK_4_3: "grok-420-computer-use-sa",
+            ModeId.CONSOLE: "console",
         }
         return _OVERRIDES.get(self, self.name.lower())  # type: ignore[arg-type]
 
@@ -47,6 +49,8 @@ MODE_STRINGS: dict[ModeId, str] = {
     ModeId.FAST: "fast",
     ModeId.EXPERT: "expert",
     ModeId.HEAVY: "heavy",
+    ModeId.GROK_4_3: "grok_4_3",
+    ModeId.CONSOLE: "console",
 }
 
 ALL_MODES: tuple[ModeId, ...] = (ModeId.AUTO, ModeId.FAST, ModeId.EXPERT)
@@ -62,6 +66,7 @@ ALL_MODES_FULL: tuple[ModeId, ...] = (
     ModeId.EXPERT,
     ModeId.HEAVY,
     ModeId.GROK_4_3,
+    ModeId.CONSOLE,
 )
 
 __all__ = [

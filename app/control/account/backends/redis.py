@@ -8,7 +8,6 @@ Layout:
 """
 
 import json
-from typing import Any
 
 from app.platform.runtime.clock import now_ms
 from ..commands import AccountPatch, AccountUpsert, BulkReplacePoolCommand, ListAccountsQuery
@@ -64,6 +63,8 @@ class RedisAccountRepository:
             "quota_fast":       json.dumps(qs.fast.to_dict()),
             "quota_expert":     json.dumps(qs.expert.to_dict()),
             "quota_heavy":      json.dumps(qs.heavy.to_dict()) if qs.heavy else "{}",
+            "quota_grok_4_3":   json.dumps(qs.grok_4_3.to_dict()) if qs.grok_4_3 else "{}",
+            "quota_console":    json.dumps(qs.console.to_dict()) if qs.console else "{}",
             "usage_use_count":  str(record.usage_use_count),
             "usage_fail_count": str(record.usage_fail_count),
             "usage_sync_count": str(record.usage_sync_count),
@@ -88,6 +89,21 @@ class RedisAccountRepository:
             v = _s(k)
             return int(v) if v else None
 
+        heavy_raw = _s("quota_heavy")
+        grok_4_3_raw = _s("quota_grok_4_3")
+        console_raw = _s("quota_console")
+        quota = {
+            "auto": json.loads(_s("quota_auto") or "{}"),
+            "fast": json.loads(_s("quota_fast") or "{}"),
+            "expert": json.loads(_s("quota_expert") or "{}"),
+        }
+        if heavy_raw and heavy_raw != "{}":
+            quota["heavy"] = json.loads(heavy_raw)
+        if grok_4_3_raw and grok_4_3_raw != "{}":
+            quota["grok_4_3"] = json.loads(grok_4_3_raw)
+        if console_raw and console_raw != "{}":
+            quota["console"] = json.loads(console_raw)
+
         return AccountRecord.model_validate({
             "token":            token,
             "pool":             _s("pool") or "basic",
@@ -95,14 +111,7 @@ class RedisAccountRepository:
             "created_at":       _i("created_at") or now_ms(),
             "updated_at":       _i("updated_at") or now_ms(),
             "tags":             json.loads(_s("tags") or "[]"),
-            "quota":            {
-                "auto":   json.loads(_s("quota_auto")   or "{}"),
-                "fast":   json.loads(_s("quota_fast")   or "{}"),
-                "expert": json.loads(_s("quota_expert") or "{}"),
-                **({
-                    "heavy": json.loads(_s("quota_heavy"))
-                } if _s("quota_heavy") and _s("quota_heavy") != "{}" else {}),
-            },
+            "quota":            quota,
             "usage_use_count":  int(_s("usage_use_count")  or 0),
             "usage_fail_count": int(_s("usage_fail_count") or 0),
             "usage_sync_count": int(_s("usage_sync_count") or 0),
@@ -238,7 +247,6 @@ class RedisAccountRepository:
             if not h:
                 continue
             record = self._from_hash(patch.token, h)
-            qs = record.quota_set()
 
             updates: dict[str, str] = {
                 "updated_at": str(ts),
@@ -268,6 +276,10 @@ class RedisAccountRepository:
                 updates["quota_expert"] = json.dumps(patch.quota_expert)
             if patch.quota_heavy is not None:
                 updates["quota_heavy"] = json.dumps(patch.quota_heavy)
+            if patch.quota_grok_4_3 is not None:
+                updates["quota_grok_4_3"] = json.dumps(patch.quota_grok_4_3)
+            if patch.quota_console is not None:
+                updates["quota_console"] = json.dumps(patch.quota_console)
 
             # Usage counters.
             if patch.usage_use_delta is not None:
