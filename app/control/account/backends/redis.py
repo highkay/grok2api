@@ -381,6 +381,13 @@ class RedisAccountRepository:
                 continue
             if query.status and r.status != query.status:
                 continue
+            if query.status_not_in and r.status in query.status_not_in:
+                continue
+            record_tags = set(r.tags or [])
+            if query.tags and not all(tag in record_tags for tag in query.tags):
+                continue
+            if query.exclude_tags and any(tag in record_tags for tag in query.exclude_tags):
+                continue
             all_records.append(r)
 
         # Sort.

@@ -9,10 +9,10 @@ Performance notes:
 
 import asyncio
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 import orjson
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, RootModel
 
@@ -34,6 +34,14 @@ if TYPE_CHECKING:
 from . import get_refresh_svc, get_repo
 
 router = APIRouter(tags=["Admin - Tokens"])
+
+_PAGE_SCAN_SIZE = 2000
+_NON_INVALID_STATUSES = (
+    AccountStatus.ACTIVE,
+    AccountStatus.COOLING,
+    AccountStatus.DISABLED,
+)
+_DEFAULT_POOLS = ("basic", "super", "heavy")
 
 # ---------------------------------------------------------------------------
 # Token sanitisation
@@ -111,10 +119,14 @@ def _quota_brief(q: dict) -> dict:
     for mode in ("auto", "fast", "expert", "heavy", "grok_4_3", "console"):
         v = q.get(mode)
         if isinstance(v, dict):
-            out[mode] = {
+            brief = {
                 "remaining": int(v.get("remaining", 0) or 0),
                 "total": int(v.get("total", 0) or 0),
             }
+            for key in ("window_seconds", "reset_at", "synced_at", "source"):
+                if key in v:
+                    brief[key] = v.get(key)
+            out[mode] = brief
     return out
 
 
@@ -125,6 +137,7 @@ def _serialize_record(r) -> dict:
         "status":      r.status,
         "quota":       _quota_brief(r.quota) if isinstance(r.quota, dict) else {},
         "use_count":   r.usage_use_count or 0,
+        "fail_count":  r.usage_fail_count or 0,
         "last_used_at": r.last_use_at,
         "tags":        r.tags or [],
     }
@@ -135,23 +148,276 @@ def _json(data) -> Response:
     return Response(content=orjson.dumps(data), media_type="application/json")
 
 
+def _parse_csv(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _normalise_pool(pool: str | None) -> str | None:
+    value = (pool or "").strip().lower()
+    return None if value in ("", "all") else value
+
+
+def _status_query(status: str | None) -> tuple[AccountStatus | None, list[AccountStatus]]:
+    value = (status or "").strip().lower()
+    if value in ("", "all"):
+        return None, []
+    if value == "invalid":
+        return None, list(_NON_INVALID_STATUSES)
+    try:
+        return AccountStatus(value), []
+    except ValueError as exc:
+        raise ValidationError("Invalid status filter", param="status") from exc
+
+
+def _build_list_query(
+    *,
+    page: int,
+    page_size: int,
+    pool: str | None,
+    status: str | None,
+    tags: str | None,
+    exclude_tags: str | None,
+    sort_by: str,
+    sort_desc: bool,
+) -> ListAccountsQuery:
+    status_filter, status_not_in = _status_query(status)
+    return ListAccountsQuery(
+        page=page,
+        page_size=page_size,
+        pool=_normalise_pool(pool),
+        status=status_filter,
+        status_not_in=status_not_in,
+        tags=_parse_csv(tags),
+        exclude_tags=_parse_csv(exclude_tags),
+        sort_by=sort_by,
+        sort_desc=sort_desc,
+    )
+
+
+def _status_value(record) -> str:
+    status = record.status
+    return status.value if hasattr(status, "value") else str(status)
+
+
+def _is_invalid_record(record) -> bool:
+    return _status_value(record) not in {status.value for status in _NON_INVALID_STATUSES}
+
+
+def _matches_pool(record, pool: str | None) -> bool:
+    return pool is None or (record.pool or "basic") == pool
+
+
+def _matches_status(record, status: str | None) -> bool:
+    value = (status or "").strip().lower()
+    if value in ("", "all"):
+        return True
+    if value == "invalid":
+        return _is_invalid_record(record)
+    _status_query(value)
+    return _status_value(record) == value
+
+
+def _matches_tags(record, tags: Iterable[str], exclude_tags: Iterable[str]) -> bool:
+    record_tags = set(record.tags or [])
+    return all(tag in record_tags for tag in tags) and not any(tag in record_tags for tag in exclude_tags)
+
+
+def _empty_status_counts() -> dict[str, int]:
+    return {"all": 0, "active": 0, "cooling": 0, "invalid": 0, "disabled": 0}
+
+
+def _count_status(records: Iterable) -> dict[str, int]:
+    counts = _empty_status_counts()
+    for record in records:
+        status = _status_value(record)
+        counts["all"] += 1
+        if status == AccountStatus.ACTIVE.value:
+            counts["active"] += 1
+        elif status == AccountStatus.COOLING.value:
+            counts["cooling"] += 1
+        elif status == AccountStatus.DISABLED.value:
+            counts["disabled"] += 1
+        else:
+            counts["invalid"] += 1
+    return counts
+
+
+def _count_nsfw(records: Iterable) -> dict[str, int]:
+    counts = {"all": 0, "enabled": 0, "disabled": 0}
+    for record in records:
+        counts["all"] += 1
+        if "nsfw" in (record.tags or []):
+            counts["enabled"] += 1
+        else:
+            counts["disabled"] += 1
+    return counts
+
+
+def _count_pools(records: Iterable) -> dict[str, int]:
+    counts: dict[str, int] = {"all": 0}
+    for record in records:
+        pool = record.pool or "basic"
+        counts["all"] += 1
+        counts[pool] = counts.get(pool, 0) + 1
+    return counts
+
+
+def _summarise_records(records: list) -> dict:
+    stats = {
+        "total": 0,
+        "active": 0,
+        "cooling": 0,
+        "invalid": 0,
+        "disabled": 0,
+        "calls": 0,
+        "success": 0,
+        "fail": 0,
+        "qa": 0,
+        "qf": 0,
+        "qe": 0,
+        "qh": 0,
+        "qb": 0,
+        "qc": 0,
+        "by_pool": {},
+        "nsfw": {"enabled": 0, "disabled": 0},
+    }
+    quota_keys = {
+        "auto": "qa",
+        "fast": "qf",
+        "expert": "qe",
+        "heavy": "qh",
+        "grok_4_3": "qb",
+        "console": "qc",
+    }
+    for record in records:
+        status = _status_value(record)
+        pool = record.pool or "basic"
+        quota = _quota_brief(record.quota) if isinstance(record.quota, dict) else {}
+        success = record.usage_use_count or 0
+        fail = record.usage_fail_count or 0
+
+        stats["total"] += 1
+        stats["success"] += success
+        stats["fail"] += fail
+        stats["calls"] += success + fail
+        stats["by_pool"][pool] = stats["by_pool"].get(pool, 0) + 1
+        if "nsfw" in (record.tags or []):
+            stats["nsfw"]["enabled"] += 1
+        else:
+            stats["nsfw"]["disabled"] += 1
+
+        for mode, key in quota_keys.items():
+            stats[key] += int(quota.get(mode, {}).get("remaining", 0) or 0)
+
+        if status == AccountStatus.ACTIVE.value:
+            stats["active"] += 1
+        elif status == AccountStatus.COOLING.value:
+            stats["cooling"] += 1
+        elif status == AccountStatus.DISABLED.value:
+            stats["disabled"] += 1
+        else:
+            stats["invalid"] += 1
+    return stats
+
+
+async def _all_live_records(repo: "AccountRepository") -> tuple[list, int]:
+    records: list = []
+    revision = 0
+    page_num = 1
+    while True:
+        page = await repo.list_accounts(ListAccountsQuery(page=page_num, page_size=_PAGE_SCAN_SIZE))
+        records.extend(page.items)
+        revision = page.revision
+        if page_num * _PAGE_SCAN_SIZE >= page.total:
+            return records, revision
+        page_num += 1
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/tokens")
-async def list_tokens(repo: "AccountRepository" = Depends(get_repo)):
-    """Return flat token list."""
-    all_items: list = []
-    page_num = 1
-    while True:
-        page = await repo.list_accounts(ListAccountsQuery(page=page_num, page_size=2000))
-        all_items.extend(page.items)
-        if page_num * 2000 >= page.total:
-            break
-        page_num += 1
+@router.get("/stats")
+async def account_stats(
+    pool: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    tags: str | None = Query(default=None),
+    exclude_tags: str | None = Query(default=None),
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    """Return aggregate account stats without sending all token secrets."""
+    pool_filter = _normalise_pool(pool)
+    status_filter = (status or "").strip().lower()
+    if status_filter:
+        _status_query(status_filter)
+    tag_filter = _parse_csv(tags)
+    exclude_tag_filter = _parse_csv(exclude_tags)
 
-    return _json({"tokens": [_serialize_record(r) for r in all_items]})
+    records, revision = await _all_live_records(repo)
+    stats = _summarise_records(records)
+    pools = sorted({*_DEFAULT_POOLS, *stats["by_pool"].keys()})
+
+    status_records = [
+        record for record in records
+        if _matches_pool(record, pool_filter) and _matches_tags(record, tag_filter, exclude_tag_filter)
+    ]
+    nsfw_records = [
+        record for record in records
+        if _matches_pool(record, pool_filter) and _matches_status(record, status_filter)
+    ]
+    pool_records = [
+        record for record in records
+        if _matches_status(record, status_filter) and _matches_tags(record, tag_filter, exclude_tag_filter)
+    ]
+
+    pool_counts = _count_pools(pool_records)
+    for pool_name in pools:
+        pool_counts.setdefault(pool_name, 0)
+
+    stats.update({
+        "status_counts": _count_status(status_records),
+        "nsfw_counts": _count_nsfw(nsfw_records),
+        "pool_counts": pool_counts,
+        "pools": pools,
+        "revision": revision,
+    })
+    return _json(stats)
+
+
+@router.get("/tokens")
+async def list_tokens(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=2000),
+    pool: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    tags: str | None = Query(default=None),
+    exclude_tags: str | None = Query(default=None),
+    sort_by: str = Query(default="updated_at"),
+    sort_desc: bool = Query(default=True),
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    """Return one page of token records plus pagination metadata."""
+    query = _build_list_query(
+        page=page,
+        page_size=page_size,
+        pool=pool,
+        status=status,
+        tags=tags,
+        exclude_tags=exclude_tags,
+        sort_by=sort_by,
+        sort_desc=sort_desc,
+    )
+    account_page = await repo.list_accounts(query)
+    return _json({
+        "tokens": [_serialize_record(r) for r in account_page.items],
+        "total": account_page.total,
+        "page": account_page.page,
+        "page_size": account_page.page_size,
+        "total_pages": account_page.total_pages,
+        "revision": account_page.revision,
+    })
 
 
 @router.post("/tokens")

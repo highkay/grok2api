@@ -457,6 +457,16 @@ class LocalAccountRepository:
                 if query.status:
                     where_parts.append("status = ?")
                     params.append(query.status.value)
+                if query.status_not_in:
+                    placeholders = ",".join("?" * len(query.status_not_in))
+                    where_parts.append(f"status NOT IN ({placeholders})")
+                    params.extend(status.value for status in query.status_not_in)
+                for tag in query.tags:
+                    where_parts.append("tags LIKE ?")
+                    params.append(f'%"{tag}"%')
+                for tag in query.exclude_tags:
+                    where_parts.append("tags NOT LIKE ?")
+                    params.append(f'%"{tag}"%')
 
                 where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
                 order_dir = "DESC" if query.sort_desc else "ASC"

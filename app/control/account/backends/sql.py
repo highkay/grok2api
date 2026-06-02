@@ -795,6 +795,14 @@ class SqlAccountRepository:
                 stmt = stmt.where(accounts_table.c.pool == query.pool)
             if query.status:
                 stmt = stmt.where(accounts_table.c.status == query.status.value)
+            if query.status_not_in:
+                stmt = stmt.where(
+                    accounts_table.c.status.notin_([status.value for status in query.status_not_in])
+                )
+            for tag in query.tags:
+                stmt = stmt.where(accounts_table.c.tags.like(f'%"{tag}"%'))
+            for tag in query.exclude_tags:
+                stmt = stmt.where(accounts_table.c.tags.not_like(f'%"{tag}"%'))
 
             total_row = (await conn.execute(
                 sa.select(sa.func.count()).select_from(stmt.subquery())

@@ -1115,21 +1115,15 @@
 const PAGE_SIZE_KEY = 'admin.account.page_size';
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000, 2000];
 
-let allTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage = 1, pageSize = loadSavedPageSize();
+let pageTokens = [], statsData = null, curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage = 1, pageSize = loadSavedPageSize();
+let pageMeta = { total: 0, page: 1, page_size: pageSize, total_pages: 1, revision: 0 };
+let knownPools = ['basic', 'super', 'heavy'];
 const sel = new Set();
 const refreshingTokens = new Set();
 let _cb = null;
 let _editingToken = '';
 let _filterMenuBound = false;
-let _tokenViewVersion = 0;
-let _tokenViewCacheKey = '';
-let _tokenViewCache = null;
-
-function invalidateTokenView() {
-  _tokenViewVersion += 1;
-  _tokenViewCacheKey = '';
-  _tokenViewCache = null;
-}
+let _loadSeq = 0;
 
 function tr(key, params, fallback) {
   const value = t(key, params);
@@ -1200,22 +1194,84 @@ let selectionStrategy = 'quota';
 
 // ── Load ───────────────────────────────────────────────────────────────────
 async function load() {
+  const seq = ++_loadSeq;
   try {
-    const [data, status] = await Promise.all([
-      _api('GET', '/tokens'),
-      _api('GET', '/status').catch(() => null),
-    ]);
-    if (status && typeof status.selection_strategy === 'string') {
-      selectionStrategy = status.selection_strategy;
-    }
-    allTokens = Array.isArray(data.tokens)
-      ? data.tokens
-      : Object.entries(data.tokens || {}).flatMap(([pool, items]) =>
-          Array.isArray(items) ? items.map(t => ({ ...t, pool: t.pool || pool })) : []);
+    await Promise.all([loadStats(seq), loadPage(seq, false)]);
+    if (seq !== _loadSeq) return;
     applyStrategyUI();
-    invalidateTokenView();
     render();
   } catch (e) { showToast(`${tr('account.loadFailed', null, '加载失败')}: ${e.message}`, 'error'); }
+}
+
+function appendCurrentFilters(params) {
+  if (curPool !== 'all') params.set('pool', curPool);
+  if (curStatus !== 'all') params.set('status', curStatus);
+  if (curNsfw === 'enabled') params.set('tags', 'nsfw');
+  if (curNsfw === 'disabled') params.set('exclude_tags', 'nsfw');
+}
+
+function buildTokenQuery(page = curPage, size = pageSize) {
+  const params = new URLSearchParams();
+  params.set('page', String(page));
+  params.set('page_size', String(size));
+  params.set('sort_by', 'updated_at');
+  params.set('sort_desc', 'true');
+  appendCurrentFilters(params);
+  return params.toString();
+}
+
+function buildStatsQuery() {
+  const params = new URLSearchParams();
+  appendCurrentFilters(params);
+  return params.toString();
+}
+
+async function loadStats(seq = _loadSeq) {
+  const query = buildStatsQuery();
+  const [data, status] = await Promise.all([
+    _api('GET', `/stats${query ? `?${query}` : ''}`),
+    _api('GET', '/status').catch(() => null),
+  ]);
+  if (seq !== _loadSeq) return;
+  statsData = data || null;
+  if (Array.isArray(data?.pools)) {
+    knownPools = data.pools.length ? data.pools : ['basic', 'super', 'heavy'];
+  }
+  if (curPool !== 'all' && !knownPools.includes(curPool)) {
+    curPool = 'all';
+  }
+  if (status && typeof status.selection_strategy === 'string') {
+    selectionStrategy = status.selection_strategy;
+  }
+}
+
+async function loadPage(seq = ++_loadSeq, shouldRender = true) {
+  const data = await _api('GET', `/tokens?${buildTokenQuery()}`);
+  if (seq !== _loadSeq) return;
+
+  pageTokens = Array.isArray(data.tokens)
+    ? data.tokens
+    : Object.entries(data.tokens || {}).flatMap(([pool, items]) =>
+        Array.isArray(items) ? items.map(t => ({ ...t, pool: t.pool || pool })) : []);
+  pageMeta = {
+    total: Number(data.total ?? pageTokens.length),
+    page: Number(data.page ?? curPage),
+    page_size: Number(data.page_size ?? pageSize),
+    total_pages: Math.max(1, Number(data.total_pages ?? 1)),
+    revision: Number(data.revision ?? 0),
+  };
+
+  if (pageMeta.total > 0 && curPage > pageMeta.total_pages) {
+    curPage = pageMeta.total_pages;
+    return loadPage(seq, shouldRender);
+  }
+  curPage = pageMeta.page || curPage;
+
+  if (shouldRender) {
+    renderTable();
+    renderFilters();
+    applyStrategyUI();
+  }
 }
 
 function applyStrategyUI() {
@@ -1238,10 +1294,9 @@ function render() {
 }
 
 function getTokenView() {
-  const cacheKey = `${_tokenViewVersion}|${curStatus}|${curNsfw}|${curPool}`;
-  if (_tokenViewCache && _tokenViewCacheKey === cacheKey) return _tokenViewCache;
-
+  const baseStats = statsData || {};
   const stats = {
+    total: Number(baseStats.total || 0),
     active: 0,
     cooling: 0,
     invalid: 0,
@@ -1255,79 +1310,38 @@ function getTokenView() {
     qh: 0,
     qb: 0,
     qc: 0,
+    ...baseStats,
   };
-  const statusCounts = { all: 0, active: 0, cooling: 0, invalid: 0, disabled: 0 };
-  const nsfwCounts = { all: 0, enabled: 0, disabled: 0 };
-  const poolCounts = new Map([['all', 0]]);
-  const poolsSet = new Set(['basic', 'super', 'heavy']);
-  const filteredItems = [];
 
-  for (const token of allTokens) {
-    const pool = token.pool || 'basic';
-    const quota = token.quota || {};
-    const nsfwEnabled = (token.tags || []).includes('nsfw');
-    const invalid = isInvalidStatus(token.status);
-    const disabled = isDisabledStatus(token.status);
-    const matchesPool = curPool === 'all' || pool === curPool;
-    const matchesStatus = curStatus === 'all'
-      || (curStatus === 'invalid' ? invalid : curStatus === 'disabled' ? disabled : token.status === curStatus);
-    const matchesNsfw = curNsfw === 'all' || (curNsfw === 'enabled' ? nsfwEnabled : !nsfwEnabled);
+  const statusCounts = {
+    all: 0,
+    active: 0,
+    cooling: 0,
+    invalid: 0,
+    disabled: 0,
+    ...(baseStats.status_counts || {}),
+  };
+  const nsfwCounts = {
+    all: 0,
+    enabled: 0,
+    disabled: 0,
+    ...(baseStats.nsfw_counts || {}),
+  };
+  const pools = Array.isArray(baseStats.pools) && baseStats.pools.length ? baseStats.pools : knownPools;
+  const poolCounts = new Map(Object.entries(baseStats.pool_counts || { all: 0 }));
+  pools.forEach(pool => {
+    if (!poolCounts.has(pool)) poolCounts.set(pool, 0);
+  });
+  if (!poolCounts.has('all')) poolCounts.set('all', Number(baseStats.total || 0));
 
-    poolsSet.add(pool);
-    const successCount = token.use_count || 0;
-    const failCount = token.fail_count || 0;
-    stats.success += successCount;
-    stats.fail += failCount;
-    stats.calls += successCount + failCount;
-    stats.qa += quota.auto?.remaining || 0;
-    stats.qf += quota.fast?.remaining || 0;
-    stats.qe += quota.expert?.remaining || 0;
-    stats.qh += quota.heavy?.remaining || 0;
-    stats.qb += quota.grok_4_3?.remaining || 0;
-    stats.qc += quota.console?.remaining || 0;
-
-    if (token.status === 'active') stats.active += 1;
-    if (token.status === 'cooling') stats.cooling += 1;
-    if (invalid) stats.invalid += 1;
-    if (disabled) stats.disabled += 1;
-
-    if (matchesPool && matchesNsfw) {
-      statusCounts.all += 1;
-      if (token.status === 'active') statusCounts.active += 1;
-      if (token.status === 'cooling') statusCounts.cooling += 1;
-      if (invalid) statusCounts.invalid += 1;
-      if (disabled) statusCounts.disabled += 1;
-    }
-
-    if (matchesPool && matchesStatus) {
-      nsfwCounts.all += 1;
-      if (nsfwEnabled) nsfwCounts.enabled += 1;
-      else nsfwCounts.disabled += 1;
-    }
-
-    if (matchesStatus && matchesNsfw) {
-      poolCounts.set('all', poolCounts.get('all') + 1);
-      poolCounts.set(pool, (poolCounts.get(pool) || 0) + 1);
-    }
-
-    if (matchesPool && matchesStatus && matchesNsfw) filteredItems.push(token);
-  }
-
-  if (curPool !== 'all' && !poolsSet.has(curPool)) {
-    curPool = 'all';
-    return getTokenView();
-  }
-
-  _tokenViewCacheKey = `${_tokenViewVersion}|${curStatus}|${curNsfw}|${curPool}`;
-  _tokenViewCache = {
+  return {
     stats,
     statusCounts,
     nsfwCounts,
     poolCounts,
-    pools: Array.from(poolsSet),
-    filteredItems,
+    pools,
+    filteredItems: pageTokens,
   };
-  return _tokenViewCache;
 }
 
 function poolLabel(pool) {
@@ -1344,7 +1358,7 @@ function isInvalidStatus(status) {
 
 function renderStats(view = getTokenView()) {
   const { stats } = view;
-  $('s-total',   allTokens.length);
+  $('s-total',   stats.total || 0);
   $('s-active',  stats.active);
   $('s-cooling', stats.cooling);
   $('s-invalid', stats.invalid);
@@ -1441,49 +1455,34 @@ function setFilterCount(id, value) {
   if (el) el.textContent = value;
 }
 
-function applyPoolFilter(items, pool = curPool) {
-  if (pool === 'all') return items;
-  return items.filter(t => (t.pool || 'basic') === pool);
-}
-
-function applyStatusFilter(items, status = curStatus) {
-  if (status === 'all') return items;
-  if (status === 'invalid') return items.filter(t => isInvalidStatus(t.status));
-  if (status === 'disabled') return items.filter(t => isDisabledStatus(t.status));
-  return items.filter(t => t.status === status);
-}
-
-function applyNsfwFilter(items, mode = curNsfw) {
-  if (mode === 'all') return items;
-  if (mode === 'enabled') return items.filter(t => (t.tags || []).includes('nsfw'));
-  return items.filter(t => !(t.tags || []).includes('nsfw'));
-}
-
-function filtered() {
-  return getTokenView().filteredItems;
-}
-
-function preserveScroll(fn) {
+async function preserveScroll(fn) {
   const y = window.scrollY;
-  fn();
-  requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' }));
+  try {
+    return await fn();
+  } finally {
+    requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' }));
+  }
 }
 
 function renderTable(view = getTokenView()) {
   const items = view.filteredItems;
-  const total = items.length;
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (curPage > pages) curPage = pages;
-  const slice = items.slice((curPage - 1) * pageSize, curPage * pageSize);
+  const total = Number(pageMeta.total || 0);
+  const pages = Math.max(1, Number(pageMeta.total_pages || 1));
 
-  document.getElementById('tbody').innerHTML = slice.length
-    ? slice.map(rowHtml).join('')
+  document.getElementById('tbody').innerHTML = items.length
+    ? items.map(rowHtml).join('')
     : `<tr><td colspan="10" class="empty-state">${tr('account.empty', null, '暂无 Token，请点击右上角导入或添加。')}</td></tr>`;
 
   $('pagi-page', tr('account.pageIndicator', { current: total ? curPage : 0, total: pages }, `第 ${total ? curPage : 0} / ${pages} 页`));
   $('section-table-count', total);
   const prev = document.getElementById('btn-prev'), next = document.getElementById('btn-next');
   prev.disabled = curPage <= 1; next.disabled = curPage >= pages;
+  const cbAll = document.getElementById('cb-all');
+  if (cbAll) {
+    const allSelected = items.length > 0 && items.every(t => sel.has(t.token));
+    cbAll.checked = allSelected;
+    cbAll.indeterminate = !allSelected && items.some(t => sel.has(t.token));
+  }
   updateBatchBtns();
 }
 
@@ -1564,57 +1563,62 @@ function qpills(q) {
 }
 
 // ── Nav & Pagination ────────────────────────────────────────────────────────
-function switchStatus(status) {
-  preserveScroll(() => {
+async function switchStatus(status) {
+  await preserveScroll(async () => {
     curStatus = status || 'all';
     curPage = 1;
     sel.clear();
-    renderFilters();
-    renderTable();
+    await load();
   });
 }
-function switchNsfw(mode) {
-  preserveScroll(() => {
+async function switchNsfw(mode) {
+  await preserveScroll(async () => {
     curNsfw = mode || 'all';
     curPage = 1;
     sel.clear();
-    renderFilters();
-    renderTable();
+    await load();
   });
 }
-function switchPool(pool) {
-  preserveScroll(() => {
+async function switchPool(pool) {
+  await preserveScroll(async () => {
     curPool = pool || 'all';
     curPage = 1;
     sel.clear();
-    renderFilters();
-    renderTable();
+    await load();
   });
 }
-function prevPage() { if (curPage > 1) { curPage--; renderTable(); } }
-function nextPage() {
-  const pages = Math.max(1, Math.ceil(getTokenView().filteredItems.length / pageSize));
-  if (curPage < pages) { curPage++; renderTable(); }
+async function prevPage() {
+  if (curPage > 1) {
+    curPage--;
+    await preserveScroll(() => loadPage());
+  }
 }
-function changePageSize(v) {
+async function nextPage() {
+  const pages = Math.max(1, Number(pageMeta.total_pages || 1));
+  if (curPage < pages) {
+    curPage++;
+    await preserveScroll(() => loadPage());
+  }
+}
+async function changePageSize(v) {
   const next = Number(v);
   pageSize = PAGE_SIZE_OPTIONS.includes(next) ? next : 50;
   localStorage.setItem(PAGE_SIZE_KEY, String(pageSize));
   curPage = 1;
-  renderTable();
+  await loadPage();
 }
 
 function toggleAll(checked) {
-  getTokenView().filteredItems.slice((curPage-1)*pageSize, curPage*pageSize).forEach(t => checked ? sel.add(t.token) : sel.delete(t.token));
+  pageTokens.forEach(t => checked ? sel.add(t.token) : sel.delete(t.token));
   document.querySelectorAll('.row-cb').forEach(el => el.checked = checked);
   updateBatchBtns();
 }
 function toggleRow(el) {
   el.checked ? sel.add(el.dataset.token) : sel.delete(el.dataset.token);
-  const page = getTokenView().filteredItems.slice((curPage-1)*pageSize, curPage*pageSize);
+  const page = pageTokens;
   const cbAll = document.getElementById('cb-all');
-  cbAll.checked = page.every(t => sel.has(t.token));
-  cbAll.indeterminate = !cbAll.checked && sel.size > 0;
+  cbAll.checked = page.length > 0 && page.every(t => sel.has(t.token));
+  cbAll.indeterminate = !cbAll.checked && page.some(t => sel.has(t.token));
   updateBatchBtns();
 }
 function updateBatchBtns() {
@@ -1663,19 +1667,21 @@ async function copy(t) {
 // ── Add / Import ───────────────────────────────────────────────────────────
 
 // For import modals: includes "auto（自动检测）" as the first / default option.
+function poolChoices() {
+  return [...new Set(['basic', 'super', 'heavy', ...knownPools].filter(Boolean))];
+}
+
 function fillImportPoolOptions(id) {
-  const known = [...new Set(['basic', 'super', 'heavy', ...allTokens.map(t => t.pool || 'basic')])];
   const opts = [
     `<option value="auto">${xe(tr('account.pool.autoRecommended', null, '自动检测（推荐）'))}</option>`,
-    ...known.map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`),
+    ...poolChoices().map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`),
   ];
   document.getElementById(id).innerHTML = opts.join('');
 }
 
 // For edit modal: shows real pool names only (no "auto").
 function fillPoolOptions(id) {
-  const pools = [...new Set(['basic', 'super', 'heavy', ...allTokens.map(t => t.pool || 'basic')])];
-  document.getElementById(id).innerHTML = pools.map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`).join('');
+  document.getElementById(id).innerHTML = poolChoices().map(p => `<option value="${p}">${xe(poolLabel(p))}</option>`).join('');
 }
 
 function openAdd() {
@@ -1692,7 +1698,7 @@ function openImport() {
 }
 
 function openEdit(token) {
-  const item = allTokens.find(t => t.token === token);
+  const item = pageTokens.find(t => t.token === token);
   if (!item) return showToast(tr('account.notFound', null, '账户不存在'), 'error');
   _editingToken = item.token;
   document.getElementById('edit-token').value = item.token;
@@ -1798,21 +1804,43 @@ async function saveTokens(pool, newToks, modalId, pendingMessage, successPrefix,
 }
 
 // ── Export ─────────────────────────────────────────────────────────────────
-function doExport() {
-  const tokens = filtered();
-  if (!tokens.length) return showToast(tr('account.exportEmpty', null, '当前没有可导出的 Token'), 'error');
-  openModal('modal-export');
-  document.getElementById('exp-count').textContent = tokens.length;
-  document.getElementById('exp-json-btn').onclick = () => {
-    closeModal('modal-export');
-    const out = {};
-    tokens.forEach(t => (out[t.pool||'basic'] = out[t.pool||'basic']||[]).push({token:t.token,tags:t.tags||[]}));
-    _download(JSON.stringify(out,null,2), `tokens-${currentFilterSuffix()}.json`, 'application/json');
-  };
-  document.getElementById('exp-txt-btn').onclick = () => {
-    closeModal('modal-export');
-    _download(tokens.map(t => t.token).join('\n'), `tokens-${currentFilterSuffix()}.txt`, 'text/plain');
-  };
+async function fetchAllFilteredTokens() {
+  const tokens = [];
+  const exportPageSize = 2000;
+  let page = 1;
+  while (true) {
+    const data = await _api('GET', `/tokens?${buildTokenQuery(page, exportPageSize)}`);
+    const items = Array.isArray(data.tokens)
+      ? data.tokens
+      : Object.entries(data.tokens || {}).flatMap(([pool, rows]) =>
+          Array.isArray(rows) ? rows.map(t => ({ ...t, pool: t.pool || pool })) : []);
+    tokens.push(...items);
+    const totalPages = Math.max(1, Number(data.total_pages || 1));
+    if (page >= totalPages) return tokens;
+    page += 1;
+  }
+}
+
+async function doExport() {
+  try {
+    showToast(tr('account.exportPreparing', null, '正在准备导出…'), 'info');
+    const tokens = await fetchAllFilteredTokens();
+    if (!tokens.length) return showToast(tr('account.exportEmpty', null, '当前没有可导出的 Token'), 'error');
+    openModal('modal-export');
+    document.getElementById('exp-count').textContent = tokens.length;
+    document.getElementById('exp-json-btn').onclick = () => {
+      closeModal('modal-export');
+      const out = {};
+      tokens.forEach(t => (out[t.pool||'basic'] = out[t.pool||'basic']||[]).push({token:t.token,tags:t.tags||[]}));
+      _download(JSON.stringify(out,null,2), `tokens-${currentFilterSuffix()}.json`, 'application/json');
+    };
+    document.getElementById('exp-txt-btn').onclick = () => {
+      closeModal('modal-export');
+      _download(tokens.map(t => t.token).join('\n'), `tokens-${currentFilterSuffix()}.txt`, 'text/plain');
+    };
+  } catch (e) {
+    showToast(`${tr('account.exportFailed', null, '导出失败')}: ${e.message}`, 'error');
+  }
 }
 
 function currentFilterSuffix() {

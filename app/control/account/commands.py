@@ -60,7 +60,9 @@ class ListAccountsQuery(BaseModel):
     page_size:       int            = Field(default=50, ge=1, le=2000)
     pool:            str | None     = None
     status:          AccountStatus | None = None
+    status_not_in:   list[AccountStatus] = Field(default_factory=list)
     tags:            list[str]      = Field(default_factory=list)
+    exclude_tags:    list[str]      = Field(default_factory=list)
     include_deleted: bool           = False
     sort_by:         str            = "updated_at"   # field name
     sort_desc:       bool           = True
