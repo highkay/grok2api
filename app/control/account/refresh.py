@@ -13,6 +13,8 @@ from app.control.model.enums import ALL_MODES_FULL
 from .enums import AccountStatus, QuotaSource
 from .models import AccountRecord, QuotaWindow
 from .quota_defaults import (
+    CONSOLE_LIMIT,
+    CONSOLE_MODE_ID,
     default_quota_window,
     infer_pool,
     normalize_quota_window,
@@ -55,6 +57,26 @@ _MODE_KEYS = {
 }
 
 _UPSTREAM_USAGE_MODE_IDS = frozenset((0, 1, 2, 3, 4))
+_BOOTSTRAP_PROBE_MODE_IDS = (0, 2, 3, 4)
+_CONSOLE_RESET_THRESHOLD = max(1, CONSOLE_LIMIT // 2)
+
+
+def _infer_pool_from_live_windows(windows: dict[int, QuotaWindow]) -> str | None:
+    auto_win = windows.get(0)
+    if auto_win is not None:
+        inferred = infer_pool(windows)
+        if inferred != "basic" or auto_win.total == 20:
+            return inferred
+
+    for mode_id in (2, 4):
+        win = windows.get(mode_id)
+        if win is None:
+            continue
+        if win.total == 150:
+            return "heavy"
+        if win.total == 50:
+            return "super"
+    return None
 
 
 class AccountRefreshService:
@@ -77,7 +99,7 @@ class AccountRefreshService:
     # ------------------------------------------------------------------
 
     async def _fetch_all_quotas(
-        self, token: str, pool: str
+        self, token: str, pool: str, *, bootstrap: bool = False
     ) -> dict[int, QuotaWindow] | None:
         """Fetch quota windows for every mode supported by *pool*.
 
@@ -94,6 +116,14 @@ class AccountRefreshService:
                 for mode_id in supported_mode_ids(pool)
                 if mode_id in _UPSTREAM_USAGE_MODE_IDS
             )
+            if bootstrap:
+                mode_ids = tuple(
+                    mode_id
+                    for mode_id in dict.fromkeys(
+                        (*_BOOTSTRAP_PROBE_MODE_IDS, *mode_ids)
+                    )
+                    if mode_id in _UPSTREAM_USAGE_MODE_IDS
+                )
             if not mode_ids:
                 return {}
             return await fetch_all_quotas(token, mode_ids)
@@ -158,7 +188,7 @@ class AccountRefreshService:
         concurrency = get_config("account.refresh.usage_concurrency", 50)
         results = await run_batch(
             active,
-            lambda r: self._refresh_one(r, apply_fallback=True),
+            lambda r: self._refresh_one(r, apply_fallback=True, bootstrap=True),
             concurrency=concurrency,
         )
         agg = RefreshResult(checked=len(records))
@@ -228,7 +258,11 @@ class AccountRefreshService:
         """Explicit refresh for a list of tokens (admin / manual trigger)."""
         records = [r for r in await self._repo.get_accounts(tokens) if is_manageable(r)]
         concurrency = get_config("account.refresh.usage_concurrency", 50)
-        results = await run_batch(records, self._refresh_one, concurrency=concurrency)
+        results = await run_batch(
+            records,
+            lambda r: self._refresh_one(r, bootstrap=True),
+            concurrency=concurrency,
+        )
         agg = RefreshResult()
         for r in results:
             agg.merge(r)
@@ -243,6 +277,7 @@ class AccountRefreshService:
         record: AccountRecord,
         *,
         apply_fallback: bool = False,
+        bootstrap: bool = False,
     ) -> RefreshResult:
         """Fetch all pool-supported modes from the usage API and persist them.
 
@@ -255,7 +290,11 @@ class AccountRefreshService:
             return RefreshResult()
 
         try:
-            windows = await self._fetch_all_quotas(record.token, record.pool)
+            windows = await self._fetch_all_quotas(
+                record.token,
+                record.pool,
+                bootstrap=bootstrap,
+            )
         except UpstreamError as exc:
             if await self._expire_invalid_credentials(record, exc):
                 return RefreshResult(checked=1, expired=1, failed=0)
@@ -271,13 +310,19 @@ class AccountRefreshService:
         # We got at least a response — apply real data per mode.
         qs = record.quota_set()
         now = now_ms()
+        inferred = _infer_pool_from_live_windows(windows)
+        effective_pool = inferred or record.pool
         patches: dict[str, dict] = {}
         refreshed = False
 
         for mode in ALL_MODES_FULL:
             mode_id = int(mode)
             if mode_id in windows:
-                window = normalize_quota_window(record.pool, mode_id, windows[mode_id])
+                window = normalize_quota_window(
+                    effective_pool,
+                    mode_id,
+                    windows[mode_id],
+                )
                 if window is None:
                     continue
                 patches[_MODE_KEYS[mode_id]] = window.to_dict()
@@ -296,7 +341,7 @@ class AccountRefreshService:
                         source=QuotaSource.ESTIMATED,
                     ).to_dict()
                 elif existing.is_window_expired(now):
-                    default = default_quota_window(record.pool, mode_id)
+                    default = default_quota_window(effective_pool, mode_id)
                     if default is None:
                         continue
                     patches[_MODE_KEYS[mode_id]] = QuotaWindow(
@@ -312,8 +357,7 @@ class AccountRefreshService:
             return RefreshResult(checked=1, failed=0 if refreshed else 1)
 
         # Infer pool type from live quota data and patch if it changed.
-        inferred = infer_pool(windows)  # type: ignore[arg-type]
-        pool_patch = inferred if inferred != record.pool else None
+        pool_patch = inferred if inferred is not None and inferred != record.pool else None
         if pool_patch:
             logger.info(
                 "account pool updated from live quota: token={}... previous_pool={} current_pool={}",
@@ -483,12 +527,33 @@ class AccountRefreshService:
         else:
             existing = qs.get(mode_id)
             if existing is not None:
+                now = use_at_ms if use_at_ms is not None else now_ms()
+                base = existing
+                if existing.is_window_expired(now):
+                    default = default_quota_window(record.pool, mode_id)
+                    if default is not None:
+                        base = QuotaWindow(
+                            remaining=default.total,
+                            total=default.total,
+                            window_seconds=default.window_seconds,
+                            reset_at=None,
+                            synced_at=now,
+                            source=QuotaSource.DEFAULT,
+                        )
+                remaining = max(0, base.remaining - 1)
+                reset_at = base.reset_at
+                if reset_at is None and base.window_seconds > 0:
+                    if mode_id == CONSOLE_MODE_ID:
+                        if remaining <= _CONSOLE_RESET_THRESHOLD:
+                            reset_at = now + base.window_seconds * 1000
+                    else:
+                        reset_at = now + base.window_seconds * 1000
                 quota_patch[mode_key] = QuotaWindow(
-                    remaining=max(0, existing.remaining - 1),
-                    total=existing.total,
-                    window_seconds=existing.window_seconds,
-                    reset_at=existing.reset_at,
-                    synced_at=existing.synced_at,
+                    remaining=remaining,
+                    total=base.total,
+                    window_seconds=base.window_seconds,
+                    reset_at=reset_at,
+                    synced_at=base.synced_at,
                     source=QuotaSource.ESTIMATED,
                 ).to_dict()
             else:
@@ -513,6 +578,46 @@ class AccountRefreshService:
                 )
             ]
         )
+
+    async def reset_expired_console_windows(self) -> int:
+        snapshot = await self._repo.runtime_snapshot()
+        now = now_ms()
+        patches = []
+
+        from .commands import AccountPatch
+
+        for record in snapshot.items:
+            if record.is_deleted() or not is_manageable(record, now=now):
+                continue
+            console_win = record.quota_set().get(CONSOLE_MODE_ID)
+            if (
+                console_win is None
+                or console_win.reset_at is None
+                or not console_win.is_window_expired(now)
+                or console_win.remaining >= console_win.total
+            ):
+                continue
+            default = default_quota_window(record.pool, CONSOLE_MODE_ID)
+            if default is None:
+                continue
+            patches.append(
+                AccountPatch(
+                    token=record.token,
+                    quota_console=QuotaWindow(
+                        remaining=default.total,
+                        total=default.total,
+                        window_seconds=default.window_seconds,
+                        reset_at=None,
+                        synced_at=now,
+                        source=QuotaSource.DEFAULT,
+                    ).to_dict(),
+                )
+            )
+
+        if patches:
+            await self._repo.patch_accounts(patches)
+            logger.debug("console quota windows reset: count={}", len(patches))
+        return len(patches)
 
     async def _expire_invalid_credentials(
         self, record: AccountRecord, exc: UpstreamError

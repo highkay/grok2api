@@ -200,7 +200,7 @@ Runtime config can also be overridden with `GROK_`-prefixed environment variable
 | `proxy.egress` | `mode`, `proxy_url`, `proxy_pool`, `resource_proxy_url`, `resource_proxy_pool`, `skip_ssl_verify` |
 | `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `timeout_sec`, `refresh_interval` |
 | `retry` | `reset_session_status_codes`, `max_retries`, `on_codes` |
-| `account.refresh` | `basic_interval_sec`, `super_interval_sec`, `heavy_interval_sec`, `usage_concurrency`, `on_demand_min_interval_sec` |
+| `account.refresh` | `basic_interval_sec`, `super_interval_sec`, `heavy_interval_sec`, `usage_concurrency`, `on_demand_min_interval_sec`, `console_reset_interval_sec` |
 | `cache.local` | `image_max_mb`, `video_max_mb` |
 | `chat` | `timeout` |
 | `image` | `timeout`, `stream_timeout` |
@@ -217,6 +217,10 @@ Runtime config can also be overridden with `GROK_`-prefixed environment variable
 | `features.image_format` | `grok_url`, `local_url`, `grok_md`, `local_md`, `base64` |
 | `features.imagine_public_image_proxy` | `true`, `false` |
 | `features.video_format` | `grok_url`, `local_url`, `grok_html`, `local_html` |
+
+### Account Quota Synchronization
+
+Account import and manual refresh bootstrap-probe the upstream usage modes `auto`, `fast`, `expert`, `heavy`, and `grok_4_3`, then use the live windows to correct the account pool to `basic`, `super`, or `heavy`. The `console` mode never calls the upstream usage API; it uses a local estimated bucket: `30` requests / `15` minutes by default. Its reset timer starts only after the bucket reaches half capacity or lower, and the background scheduler restores expired windows according to `account.refresh.console_reset_interval_sec`.
 
 <br>
 

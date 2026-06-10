@@ -125,6 +125,7 @@ super_interval_sec = 7200    # super 号池周期（秒）：quota 模式用于�
 heavy_interval_sec = 7200    # heavy 号池周期（秒）：quota 模式用于后台刷新，random 模式用于 429 冷却；默认 7200s
 usage_concurrency = 50
 on_demand_min_interval_sec = 300
+console_reset_interval_sec = 30  # console 本地估算额度过期复位扫描周期（秒）；默认 30s
 
 
 [account.selection]

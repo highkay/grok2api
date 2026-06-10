@@ -201,7 +201,7 @@ docker compose up -d
 | `proxy.egress` | `mode`, `proxy_url`, `proxy_pool`, `resource_proxy_url`, `resource_proxy_pool`, `skip_ssl_verify` |
 | `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `timeout_sec`, `refresh_interval` |
 | `retry` | `reset_session_status_codes`, `max_retries`, `on_codes` |
-| `account.refresh` | `basic_interval_sec`, `super_interval_sec`, `heavy_interval_sec`, `usage_concurrency`, `on_demand_min_interval_sec` |
+| `account.refresh` | `basic_interval_sec`, `super_interval_sec`, `heavy_interval_sec`, `usage_concurrency`, `on_demand_min_interval_sec`, `console_reset_interval_sec` |
 | `cache.local` | `image_max_mb`, `video_max_mb` |
 | `chat` | `timeout` |
 | `image` | `timeout`, `stream_timeout` |
@@ -218,6 +218,10 @@ docker compose up -d
 | `features.image_format` | `grok_url`, `local_url`, `grok_md`, `local_md`, `base64` |
 | `features.imagine_public_image_proxy` | `true`, `false` |
 | `features.video_format` | `grok_url`, `local_url`, `grok_html`, `local_html` |
+
+### 账号额度同步
+
+导入账号和手动刷新会对上游真实用量模式 `auto`、`fast`、`expert`、`heavy`、`grok_4_3` 做 bootstrap 探测，用返回的 live window 纠正账号池为 `basic`、`super` 或 `heavy`。`console` 模式不请求上游 usage API，始终使用本地估算桶：默认 `30` 次 / `15` 分钟，消耗到半桶及以下时才开始计时，后台按 `account.refresh.console_reset_interval_sec` 扫描过期窗口并恢复默认额度。
 
 <br>
 

@@ -509,6 +509,7 @@ const SCHEMA_DEF = [
           { key: 'heavy_interval_sec', label: 'Heavy 周期（秒）', labelKey: 'config.schema.fields.heavyInterval.label', type: 'number', desc: 'heavy 号池共用周期：quota 模式下用于后台刷新，random 模式下用于 429 冷却。默认 7200s。', descKey: 'config.schema.fields.heavyInterval.desc' },
           { key: 'on_demand_min_interval_sec', label: '按需刷新间隔（秒）', labelKey: 'config.schema.fields.onDemandMinInterval.label', type: 'number', desc: '请求链路触发刷新（例如收到 429）时的节流间隔。N 秒内重复触发只执行一次，避免批量打爆配额接口。', descKey: 'config.schema.fields.onDemandMinInterval.desc' },
           { key: 'usage_concurrency', label: '刷新并发数', labelKey: 'config.schema.fields.usageConcurrency.label', type: 'number', desc: '并发调用 usage 接口刷新额度时允许的最大并行数。', descKey: 'config.schema.fields.usageConcurrency.desc' },
+          { key: 'console_reset_interval_sec', label: 'Console 复位扫描（秒）', labelKey: 'config.schema.fields.consoleResetInterval.label', type: 'number', desc: '扫描 console 本地估算额度过期窗口并恢复默认额度的周期。默认 30s。', descKey: 'config.schema.fields.consoleResetInterval.desc' },
         ]
       },
       {

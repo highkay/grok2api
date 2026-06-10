@@ -20,10 +20,17 @@ _POOL_CONFIG: dict[str, tuple[str, int]] = {
     "super": ("account.refresh.super_interval_sec",  7_200),
     "heavy": ("account.refresh.heavy_interval_sec",  7_200),
 }
+_CONSOLE_RESET_CONFIG = ("account.refresh.console_reset_interval_sec", 30)
 
 
 def _interval(pool: str) -> int:
     key, default = _POOL_CONFIG[pool]
+    v = get_config(key, None)
+    return int(v) if v is not None else default
+
+
+def _console_reset_interval() -> int:
+    key, default = _CONSOLE_RESET_CONFIG
     v = get_config(key, None)
     return int(v) if v is not None else default
 
@@ -55,10 +62,20 @@ class AccountRefreshScheduler:
             asyncio.create_task(self._loop(pool), name=f"account-refresh-{pool}")
             for pool in _POOL_CONFIG
         ]
+        self._tasks.append(
+            asyncio.create_task(
+                self._console_reset_loop(),
+                name="account-refresh-console-reset",
+            )
+        )
         intervals = {p: _interval(p) for p in _POOL_CONFIG}
+        console_reset_interval = _console_reset_interval()
         logger.info(
-            "account refresh scheduler started: basic_interval_s={} super_interval_s={} heavy_interval_s={}",
-            intervals["basic"], intervals["super"], intervals["heavy"],
+            "account refresh scheduler started: basic_interval_s={} super_interval_s={} heavy_interval_s={} console_reset_interval_s={}",
+            intervals["basic"],
+            intervals["super"],
+            intervals["heavy"],
+            console_reset_interval,
         )
 
     def stop(self) -> None:
@@ -95,6 +112,31 @@ class AccountRefreshScheduler:
                 logger.error(
                     "account refresh cycle failed: pool={} error_type={} error={}",
                     pool,
+                    type(exc).__name__,
+                    exc,
+                )
+
+    async def _console_reset_loop(self) -> None:
+        while not self._stop.is_set():
+            interval = _console_reset_interval()
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=float(interval))
+                break
+            except asyncio.TimeoutError:
+                pass
+
+            if self._stop.is_set():
+                break
+
+            try:
+                reset = await self._service.reset_expired_console_windows()
+                if reset:
+                    logger.info("console quota reset cycle completed: reset={}", reset)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "console quota reset cycle failed: error_type={} error={}",
                     type(exc).__name__,
                     exc,
                 )
