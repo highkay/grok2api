@@ -93,7 +93,7 @@ flowchart LR
 ### Local Deployment
 
 ```bash
-git clone https://github.com/chenyme/grok2api
+git clone https://github.com/highkay/grok2api
 cd grok2api
 cp .env.example .env
 uv sync
@@ -103,7 +103,7 @@ uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:
 ### Docker Compose
 
 ```bash
-git clone https://github.com/chenyme/grok2api
+git clone https://github.com/highkay/grok2api
 cd grok2api
 cp .env.example .env
 docker compose up -d
@@ -111,11 +111,11 @@ docker compose up -d
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/chenyme/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,LOG_DIR,ACCOUNT_STORAGE,ACCOUNT_REDIS_URL,ACCOUNT_MYSQL_URL,ACCOUNT_POSTGRESQL_URL)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/highkay/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,LOG_DIR,ACCOUNT_STORAGE,ACCOUNT_REDIS_URL,ACCOUNT_MYSQL_URL,ACCOUNT_POSTGRESQL_URL)
 
 ### Render
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/chenyme/grok2api)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/highkay/grok2api)
 
 ### First Launch
 
